@@ -58,10 +58,13 @@ public class CosmeticUser implements CosmeticHolder {
     @Getter
     private volatile int entityId = -1;
     private HMCCScheduler.TaskHandle tickTask;
-    private boolean destroyed;
+    private volatile boolean destroyed;
     private CompletableFuture<Void> shutdownCleanup = CompletableFuture.completedFuture(null);
     private final Map<CosmeticSlot, Cosmetic> playerCosmetics = new ConcurrentHashMap<>();
-    private UserWardrobeManager userWardrobeManager;
+    // At most six detached items, prepared on the wearer owner thread. Never expose stored items.
+    private final Map<EquipmentSlot, EquipmentDisplay> equipmentDisplays = new ConcurrentHashMap<>();
+    private record EquipmentDisplay(Cosmetic cosmetic, ItemStack item, boolean requireEmpty) {}
+    private volatile UserWardrobeManager userWardrobeManager;
     private UserBalloonManager userBalloonManager;
     @Getter @Nullable
     private UserBackpackManager userBackpackManager;
@@ -220,6 +223,7 @@ public class CosmeticUser implements CosmeticHolder {
     public void destroy() {
         if (destroyed) return;
         destroyed = true;
+        equipmentDisplays.clear();
         if(this.tickTask != null) this.tickTask.cancel();
 
         despawnBackpack();
@@ -230,6 +234,7 @@ public class CosmeticUser implements CosmeticHolder {
         forceLeaveWardrobeImmediately();
         if (destroyed) return shutdownCleanup;
         destroyed = true;
+        equipmentDisplays.clear();
         if (tickTask != null) tickTask.cancel();
         UserBalloonManager balloon = userBalloonManager;
         userBalloonManager = null;
@@ -247,6 +252,7 @@ public class CosmeticUser implements CosmeticHolder {
     public CompletableFuture<Void> destroyForRetirement() {
         if (destroyed) return shutdownCleanup;
         destroyed = true;
+        equipmentDisplays.clear();
         if (tickTask != null) tickTask.cancel();
         userWardrobeManager = null;
         List<CompletableFuture<Void>> cleanup = new ArrayList<>();
@@ -286,6 +292,9 @@ public class CosmeticUser implements CosmeticHolder {
 
         playerCosmetics.put(cosmetic.getSlot(), cosmetic);
         if (color != null) colors.put(cosmetic.getSlot(), color);
+        if (cosmetic instanceof CosmeticArmorType armorType) {
+            cacheEquipmentDisplay(armorType, armorType.getItem(this));
+        }
         MessagesUtil.sendDebugMessages("addPlayerCosmetic[id=" + cosmetic.getId() + "]");
         if (!isHidden()) {
             if (cosmetic.getSlot() == CosmeticSlot.BACKPACK) {
@@ -336,6 +345,8 @@ public class CosmeticUser implements CosmeticHolder {
         }
         colors.remove(slot);
         playerCosmetics.remove(slot);
+        EquipmentSlot equipmentSlot = HMCCInventoryUtils.getEquipmentSlot(slot);
+        if (equipmentSlot != null) equipmentDisplays.remove(equipmentSlot);
         removeArmor(slot);
     }
 
@@ -402,9 +413,14 @@ public class CosmeticUser implements CosmeticHolder {
                 boolean requireEmpty = Settings.getSlotOption(armorType.getEquipSlot()).isRequireEmpty();
                 boolean isAir = humanEntity.getInventory().getItem(armorType.getEquipSlot()).getType().isAir();
                 MessagesUtil.sendDebugMessages("updateCosmetic (All) - " + armorType.getId() + " - " + requireEmpty + " - " + isAir);
-                if (requireEmpty && !isAir) continue;
+                if (requireEmpty && !isAir) {
+                    equipmentDisplays.remove(armorType.getEquipSlot());
+                    continue;
+                }
 
-                items.put(HMCCInventoryUtils.getEquipmentSlot(armorType.getSlot()), armorType.getItem(this));
+                ItemStack item = armorType.getItem(this);
+                cacheEquipmentDisplay(armorType, item);
+                items.put(HMCCInventoryUtils.getEquipmentSlot(armorType.getSlot()), item);
             } else {
                 behavior.dispatchUpdate(this);
             }
@@ -426,14 +442,47 @@ public class CosmeticUser implements CosmeticHolder {
         return getUserCosmeticItem(cosmetic);
     }
 
+    /** Called on the wearer owner thread before sending an equipment update. */
+    @ApiStatus.Internal
+    public void cacheEquipmentDisplay(@NotNull CosmeticArmorType cosmetic, @Nullable ItemStack item) {
+        EquipmentSlot slot = cosmetic.getEquipSlot();
+        if (destroyed || isHidden() || item == null) {
+            equipmentDisplays.remove(slot);
+            return;
+        }
+        equipmentDisplays.put(slot, new EquipmentDisplay(cosmetic, item.clone(),
+                Settings.getSlotOption(slot).isRequireEmpty()));
+    }
+
+    /** Network readers only inspect detached snapshots and concurrent cosmetic state. */
+    @ApiStatus.Internal
+    public @Nullable ItemStack getEquipmentDisplay(@NotNull EquipmentSlot slot, @NotNull ItemStack incoming) {
+        if (destroyed || isHidden() || isInWardrobe() || slot == EquipmentSlot.HAND) return null;
+        EquipmentDisplay display = equipmentDisplays.get(slot);
+        if (display == null || getCosmetic(display.cosmetic().getSlot()) != display.cosmetic()) return null;
+        if (display.requireEmpty() && !incoming.getType().isAir()
+                && !HMCCInventoryUtils.isCosmeticItem(incoming)) return null;
+        return display.item().clone();
+    }
+
     public ItemStack getUserCosmeticItem(@NotNull Cosmetic cosmetic) {
+        return getUserCosmeticItemForDisplay(cosmetic, null);
+    }
+
+    /**
+     * Uses an outbound equipment copy to retain display processing done by earlier packet handlers.
+     * The supplied copy is only read; neither it nor the player's equipment is modified.
+     */
+    public ItemStack getUserCosmeticItemForDisplay(@NotNull Cosmetic cosmetic, @Nullable ItemStack equipmentDisplay) {
         ItemStack item = null;
         if (!hiddenReason.isEmpty()) {
             if (cosmetic instanceof CosmeticBackpackType || cosmetic instanceof CosmeticBalloonType) return new ItemStack(Material.AIR);
+            if (equipmentDisplay != null) return equipmentDisplay.clone();
             return getPlayer().getInventory().getItem(HMCCInventoryUtils.getEquipmentSlot(cosmetic.getSlot()));
         }
         if (cosmetic instanceof CosmeticArmorType armorType) {
             item = getUserCosmeticItem(cosmetic, cosmetic.getItem());
+            if (equipmentDisplay != null) return armorType.getItem(this, item, equipmentDisplay);
             return armorType.getItem(this, item);
         }
         if (cosmetic instanceof CosmeticBackpackType) {

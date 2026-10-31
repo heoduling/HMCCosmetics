@@ -46,7 +46,8 @@ public class CosmeticPacketInterface implements PacketInterface {
                     boolean isAir = user.getPlayer().getInventory().getItem(armorType.getEquipSlot()).getType().isAir();
                     MessagesUtil.sendDebugMessages("Menu Fired (Checks) - " + armorType.getId() + " - " + requireEmpty + " - " + isAir);
                     if (requireEmpty && !isAir) continue;
-                    cosmeticItems.put(HMCCInventoryUtils.getPacketArmorSlot(armorType.getEquipSlot()), user.getUserCosmeticItem(armorType));
+                    int packetSlot = HMCCInventoryUtils.getPacketArmorSlot(armorType.getEquipSlot());
+                    cosmeticItems.put(packetSlot, user.getUserCosmeticItemForDisplay(armorType, slotData.get(packetSlot)));
                 }
             }
         }
@@ -84,42 +85,24 @@ public class CosmeticPacketInterface implements PacketInterface {
         if (Settings.getSlotOption(equipmentSlot).isRequireEmpty()) {
             if (!player.getInventory().getItem(equipmentSlot).getType().isAir()) return PacketAction.NOTHING;
         }
-        wrapper.setItemStack(user.getUserCosmeticItem(cosmeticSlot));
+        wrapper.setItemStack(user.getUserCosmeticItemForDisplay(user.getCosmetic(cosmeticSlot), itemStack));
         return PacketAction.CHANGED;
     }
 
     @Override
     public @NotNull PacketAction writeEquipmentContent(@NotNull Player player, @NotNull EntityEquipmentWrapper wrapper) {
-        CosmeticUser user = CosmeticUsers.getUser(player);
-        if (user == null || user.getEntityId() != wrapper.getEntityId()) return PacketAction.NOTHING;
-        if (user.isInWardrobe()) return PacketAction.NOTHING;
+        CosmeticUser user = CosmeticUsers.getUser(wrapper.getEntityId());
+        if (user == null) return PacketAction.NOTHING;
         Map<EquipmentSlot, ItemStack> armor = wrapper.getArmor();
-
+        boolean changed = false;
         for (Map.Entry<EquipmentSlot, ItemStack> armorSlot : armor.entrySet()) {
-            EquipmentSlot slot = armorSlot.getKey();
-
-            if (slot == EquipmentSlot.HAND) {
-                if (user.getPlayer().getUniqueId() == player.getUniqueId())
-                    continue; // When a player scrolls real fast, it messes up the mainhand. This fixes it
-                if (user.getPlayer() != null && user.getPlayer().isInvisible())
-                    continue; // Fixes integration with GSit still showing mainhand even when hidden
-                armor.put(slot, player.getInventory().getItemInMainHand());
-            } else {
-                CosmeticSlot cosmeticSlot = HMCCInventoryUtils.BukkitCosmeticSlot(slot);
-                if (cosmeticSlot == null) continue;
-                if (Settings.getSlotOption(slot).isRequireEmpty() && player.getInventory().getItem(slot).getType().isAir())
-                    continue;
-
-                CosmeticArmorType cosmeticArmor = (CosmeticArmorType) user.getCosmetic(cosmeticSlot);
-                if (cosmeticArmor == null) continue;
-                ItemStack item = user.getUserCosmeticItem(cosmeticSlot);
-                if (item == null) continue;
-                armor.put(slot, item);
-            }
+            ItemStack item = user.getEquipmentDisplay(armorSlot.getKey(), armorSlot.getValue());
+            if (item == null) continue;
+            armorSlot.setValue(item);
+            changed = true;
         }
-
+        if (!changed) return PacketAction.NOTHING;
         wrapper.setArmor(armor);
-        MessagesUtil.sendDebugMessages("Equipment for " + user.getPlayer().getName() + " has been updated for " + player.getName());
         return PacketAction.CHANGED;
     }
 

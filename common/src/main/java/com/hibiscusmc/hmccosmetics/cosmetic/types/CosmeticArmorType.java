@@ -29,6 +29,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.EquipmentSlotGroup;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.NamespacedKey;
 import org.jetbrains.annotations.NotNull;
@@ -69,6 +70,7 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
             if (!humanEntity.getInventory().getItem(equipSlot).getType().isAir()) return;
         }
         ItemStack item = getItem(user);
+        user.cacheEquipmentDisplay(this, item);
         if (item == null) return;
         HMCCPacketManager.equipmentSlotUpdate(entity.getEntityId(), equipSlot, item, HMCCPacketManager.getViewers(entity.getLocation()));
     }
@@ -79,19 +81,24 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
 
     public ItemStack getItem(@NotNull CosmeticUser user, ItemStack cosmeticItem) {
         if (cosmeticItem == null) return null;
-
         Player player = user.getPlayer();
         if (player == null) return null;
+        return getItem(user, cosmeticItem, player.getInventory().getItem(equipSlot));
+    }
 
-        ItemStack physicalEquippedItem = player.getInventory().getItem(equipSlot);
+    /** Builds a cosmetic using the equipment's already rendered packet copy when available. */
+    public ItemStack getItem(@NotNull CosmeticUser user, ItemStack cosmeticItem, @NotNull ItemStack physicalEquippedItem) {
+        if (cosmeticItem == null || user.getPlayer() == null) return null;
         if (physicalEquippedItem.getType().isAir()) return cosmeticItem;
 
         SlotOptionConfig slotOption = Settings.getSlotOption(equipSlot);
+        ItemMeta physicalMeta = physicalEquippedItem.getItemMeta();
         if (slotOption.isAddEnchantments()) cosmeticItem.addUnsafeEnchantments(physicalEquippedItem.getEnchantments());
         if (slotOption.isEquipmentNamePassThrough() || slotOption.isEquipmentLorePassThrough()) {
-            addEquipmentLore(cosmeticItem, physicalEquippedItem, slotOption.isEquipmentNamePassThrough(), slotOption.isEquipmentLorePassThrough());
+            addEquipmentLore(cosmeticItem, physicalEquippedItem, physicalMeta, slotOption.isEquipmentNamePassThrough(), slotOption.isEquipmentLorePassThrough());
         }
         if (slotOption.isEquipmentAttributesPassThrough()) addEquipmentAttributes(cosmeticItem, physicalEquippedItem);
+        copyEquipmentDisplayFlags(cosmeticItem, physicalMeta, slotOption);
 
         if (slotOption.isAddElytraComponent()
                 && HibiscusCommonsPlugin.isOnPaper()
@@ -114,11 +121,10 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
         return cosmeticItem;
     }
 
-    private void addEquipmentLore(ItemStack cosmeticItem, ItemStack physicalEquippedItem, boolean includeName, boolean includeLore) {
+    private void addEquipmentLore(ItemStack cosmeticItem, ItemStack physicalEquippedItem, ItemMeta physicalMeta, boolean includeName, boolean includeLore) {
         ItemMeta cosmeticMeta = cosmeticItem.getItemMeta();
         if (cosmeticMeta == null) return;
 
-        ItemMeta physicalMeta = physicalEquippedItem.getItemMeta();
         List<Component> lore = new ArrayList<>();
         if (includeName) lore.addAll(formatEquipmentName(getEquipmentName(physicalEquippedItem, physicalMeta)));
         if (includeLore && physicalMeta != null && physicalMeta.hasLore()) {
@@ -131,6 +137,18 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
         }
 
         cosmeticMeta.lore(lore);
+        cosmeticItem.setItemMeta(cosmeticMeta);
+    }
+
+    private void copyEquipmentDisplayFlags(ItemStack cosmeticItem, ItemMeta physicalMeta, SlotOptionConfig slotOption) {
+        if (physicalMeta == null) return;
+        boolean hideEnchants = slotOption.isAddEnchantments() && physicalMeta.hasItemFlag(ItemFlag.HIDE_ENCHANTS);
+        boolean hideAttributes = slotOption.isEquipmentAttributesPassThrough() && physicalMeta.hasItemFlag(ItemFlag.HIDE_ATTRIBUTES);
+        if (!hideEnchants && !hideAttributes) return;
+        ItemMeta cosmeticMeta = cosmeticItem.getItemMeta();
+        if (cosmeticMeta == null) return;
+        if (hideEnchants) cosmeticMeta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
+        if (hideAttributes) cosmeticMeta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         cosmeticItem.setItemMeta(cosmeticMeta);
     }
 

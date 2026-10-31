@@ -215,21 +215,19 @@ public class PlayerGameListener implements Listener {
 
     @EventHandler(priority = EventPriority.LOW, ignoreCancelled = true)
     public void onPlayerArmorDamage(PlayerItemDamageEvent event) {
-        // Possibly look into cancelling the event, then handling the damage on our own.
         MessagesUtil.sendDebugMessages("PlayerItemDamageEvent");
 
-        int slot = -1;
-        int w = 36;
-        for (ItemStack armorItem : event.getPlayer().getInventory().getArmorContents()) {
+        EquipmentSlot slot = null;
+        for (EquipmentSlot armorSlot : List.of(EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET)) {
+            ItemStack armorItem = event.getPlayer().getInventory().getItem(armorSlot);
             if (armorItem == null) continue;
             if (armorItem.isSimilar(event.getItem())) {
-                slot = w;
+                slot = armorSlot;
                 break;
             }
-            w++;
         }
 
-        if (slot == -1) return;
+        if (slot == null) return;
 
         CosmeticUser user = CosmeticUsers.getUser(event.getPlayer().getUniqueId());
         if (user == null) return;
@@ -241,6 +239,7 @@ public class PlayerGameListener implements Listener {
         }
 
         HMCCScheduler.runEntityLater(event.getPlayer(), () -> {
+            if (CosmeticUsers.getUser(event.getPlayer()) != user) return;
             MessagesUtil.sendDebugMessages("PlayerItemDamageEvent UpdateCosmetic " + cosmeticSlot);
             user.updateCosmetic(cosmeticSlot);
         }, 2);
