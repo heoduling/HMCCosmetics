@@ -75,7 +75,10 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
         if (cosmeticItem == null) return null;
         Player player = user.getPlayer();
         if (player == null) return null;
-        return buildItem(user, cosmeticItem, player.getInventory().getItem(equipSlot), false);
+        ItemStack equipment = player.getInventory().getItem(equipSlot);
+        // Preserve the original virtual dispatch for custom armor types.
+        if (getClass() != CosmeticArmorType.class) return getItem(user, cosmeticItem, equipment);
+        return buildItem(user, cosmeticItem, equipment, false);
     }
 
     /** Builds a cosmetic using the equipment's already rendered packet copy when available. */
