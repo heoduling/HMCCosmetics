@@ -29,6 +29,10 @@ import lombok.Setter;
 import me.lojosho.hibiscuscommons.hooks.Hooks;
 import me.lojosho.hibiscuscommons.nms.NMSHandlers;
 import me.lojosho.hibiscuscommons.util.InventoryUtils;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
 import org.bukkit.Location;
@@ -50,9 +54,13 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 public class CosmeticUser implements CosmeticHolder {
+    private static final Pattern NAME_LINE_SEPARATOR = Pattern.compile("(?i)<(?:br|newline)>");
+    private static final int NAME_CACHE_SIZE = EquipmentSlot.values().length * 2;
     @Getter
     private final UUID uniqueId;
     @Getter
@@ -64,6 +72,9 @@ public class CosmeticUser implements CosmeticHolder {
     // At most six detached items, prepared on the wearer owner thread. Never expose stored items.
     private final Map<EquipmentSlot, EquipmentDisplay> equipmentDisplays = new ConcurrentHashMap<>();
     private record EquipmentDisplay(Cosmetic cosmetic, ItemStack item, boolean requireEmpty) {}
+    // Separate raw/packet inputs per slot. Entries contain only immutable formatting results.
+    private volatile AtomicReferenceArray<FormattedEquipmentName> equipmentNameFormats = new AtomicReferenceArray<>(NAME_CACHE_SIZE);
+    private record FormattedEquipmentName(Cosmetic cosmetic, String format, Component name, List<Component> lines) {}
     private volatile UserWardrobeManager userWardrobeManager;
     private UserBalloonManager userBalloonManager;
     @Getter @Nullable
@@ -223,6 +234,7 @@ public class CosmeticUser implements CosmeticHolder {
     public void destroy() {
         if (destroyed) return;
         destroyed = true;
+        equipmentNameFormats = null;
         equipmentDisplays.clear();
         if(this.tickTask != null) this.tickTask.cancel();
 
@@ -234,6 +246,7 @@ public class CosmeticUser implements CosmeticHolder {
         forceLeaveWardrobeImmediately();
         if (destroyed) return shutdownCleanup;
         destroyed = true;
+        equipmentNameFormats = null;
         equipmentDisplays.clear();
         if (tickTask != null) tickTask.cancel();
         UserBalloonManager balloon = userBalloonManager;
@@ -252,6 +265,7 @@ public class CosmeticUser implements CosmeticHolder {
     public CompletableFuture<Void> destroyForRetirement() {
         if (destroyed) return shutdownCleanup;
         destroyed = true;
+        equipmentNameFormats = null;
         equipmentDisplays.clear();
         if (tickTask != null) tickTask.cancel();
         userWardrobeManager = null;
@@ -345,6 +359,7 @@ public class CosmeticUser implements CosmeticHolder {
         }
         colors.remove(slot);
         playerCosmetics.remove(slot);
+        clearEquipmentNameFormats();
         EquipmentSlot equipmentSlot = HMCCInventoryUtils.getEquipmentSlot(slot);
         if (equipmentSlot != null) equipmentDisplays.remove(equipmentSlot);
         removeArmor(slot);
@@ -440,6 +455,31 @@ public class CosmeticUser implements CosmeticHolder {
         Cosmetic cosmetic = getCosmetic(slot);
         if (cosmetic == null) return new ItemStack(Material.AIR);
         return getUserCosmeticItem(cosmetic);
+    }
+
+    @ApiStatus.Internal
+    public List<Component> formatEquipmentName(CosmeticArmorType cosmetic, String format, Component name, boolean packetDisplay) {
+        AtomicReferenceArray<FormattedEquipmentName> cache = destroyed ? null : equipmentNameFormats;
+        int index = cosmetic.getEquipSlot().ordinal() * 2 + (packetDisplay ? 1 : 0);
+        FormattedEquipmentName cached = cache == null ? null : cache.get(index);
+        if (cached != null && cached.cosmetic() == cosmetic && cached.format().equals(format) && cached.name().equals(name)) {
+            return cached.lines();
+        }
+        List<Component> lines = new ArrayList<>();
+        for (String line : NAME_LINE_SEPARATOR.split(format, -1)) {
+            lines.add(MiniMessage.miniMessage()
+                    .deserialize(line, Placeholder.component("equipment_name", name))
+                    .decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE));
+        }
+        List<Component> result = List.copyOf(lines);
+        if (cache != null) cache.set(index, new FormattedEquipmentName(cosmetic, format, name, result));
+        return result;
+    }
+
+    /** Swapping the array also discards writes from formatting calls started before invalidation. */
+    @ApiStatus.Internal
+    public void clearEquipmentNameFormats() {
+        equipmentNameFormats = destroyed ? null : new AtomicReferenceArray<>(NAME_CACHE_SIZE);
     }
 
     /** Called on the wearer owner thread before sending an equipment update. */

@@ -16,9 +16,6 @@ import me.lojosho.hibiscuscommons.nms.MinecraftVersion;
 import me.lojosho.hibiscuscommons.nms.NMSHandlers;
 import me.lojosho.shaded.configurate.ConfigurationNode;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.TextDecoration;
-import net.kyori.adventure.text.minimessage.MiniMessage;
-import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.attribute.Attribute;
@@ -26,6 +23,7 @@ import org.bukkit.attribute.AttributeModifier;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.EquipmentSlotGroup;
 import org.bukkit.inventory.ItemStack;
@@ -40,15 +38,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavior {
-    private static final Pattern NAME_LINE_SEPARATOR = Pattern.compile("(?i)<(?:br|newline)>");
     private final EquipmentSlot equipSlot;
-    // One immutable entry per cosmetic; never retains players or mutable ItemStacks.
-    private volatile FormattedName formattedName;
-
-    private record FormattedName(String format, Component name, List<Component> lines) {}
 
     public CosmeticArmorType(String id, ConfigurationNode config) {
         super(id, config);
@@ -83,22 +75,38 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
         if (cosmeticItem == null) return null;
         Player player = user.getPlayer();
         if (player == null) return null;
-        return getItem(user, cosmeticItem, player.getInventory().getItem(equipSlot));
+        return buildItem(user, cosmeticItem, player.getInventory().getItem(equipSlot), false);
     }
 
     /** Builds a cosmetic using the equipment's already rendered packet copy when available. */
     public ItemStack getItem(@NotNull CosmeticUser user, ItemStack cosmeticItem, @NotNull ItemStack physicalEquippedItem) {
+        return buildItem(user, cosmeticItem, physicalEquippedItem, true);
+    }
+
+    private ItemStack buildItem(CosmeticUser user, ItemStack cosmeticItem, ItemStack physicalEquippedItem, boolean packetDisplay) {
         if (cosmeticItem == null || user.getPlayer() == null) return null;
         if (physicalEquippedItem.getType().isAir()) return cosmeticItem;
 
         SlotOptionConfig slotOption = Settings.getSlotOption(equipSlot);
         ItemMeta physicalMeta = physicalEquippedItem.getItemMeta();
-        if (slotOption.isAddEnchantments()) cosmeticItem.addUnsafeEnchantments(physicalEquippedItem.getEnchantments());
-        if (slotOption.isEquipmentNamePassThrough() || slotOption.isEquipmentLorePassThrough()) {
-            addEquipmentLore(cosmeticItem, physicalEquippedItem, physicalMeta, slotOption.isEquipmentNamePassThrough(), slotOption.isEquipmentLorePassThrough());
+        Map<Enchantment, Integer> enchantments = slotOption.isAddEnchantments() && physicalMeta != null
+                ? physicalMeta.getEnchants() : Map.of();
+        boolean passLore = slotOption.isEquipmentNamePassThrough() || slotOption.isEquipmentLorePassThrough();
+        boolean hideEnchants = slotOption.isAddEnchantments() && physicalMeta != null && physicalMeta.hasItemFlag(ItemFlag.HIDE_ENCHANTS);
+        boolean hideAttributes = slotOption.isEquipmentAttributesPassThrough() && physicalMeta != null && physicalMeta.hasItemFlag(ItemFlag.HIDE_ATTRIBUTES);
+        if (passLore || !enchantments.isEmpty() || hideEnchants || hideAttributes) {
+            ItemMeta cosmeticMeta = cosmeticItem.getItemMeta();
+            if (cosmeticMeta != null) {
+                for (Map.Entry<Enchantment, Integer> enchantment : enchantments.entrySet()) {
+                    cosmeticMeta.addEnchant(enchantment.getKey(), enchantment.getValue(), true);
+                }
+                if (passLore) addEquipmentLore(user, cosmeticMeta, physicalEquippedItem, physicalMeta, slotOption, packetDisplay);
+                if (hideEnchants) cosmeticMeta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
+                if (hideAttributes) cosmeticMeta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
+                cosmeticItem.setItemMeta(cosmeticMeta);
+            }
         }
         if (slotOption.isEquipmentAttributesPassThrough()) addEquipmentAttributes(cosmeticItem, physicalEquippedItem);
-        copyEquipmentDisplayFlags(cosmeticItem, physicalMeta, slotOption);
 
         if (slotOption.isAddElytraComponent()
                 && HibiscusCommonsPlugin.isOnPaper()
@@ -121,13 +129,14 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
         return cosmeticItem;
     }
 
-    private void addEquipmentLore(ItemStack cosmeticItem, ItemStack physicalEquippedItem, ItemMeta physicalMeta, boolean includeName, boolean includeLore) {
-        ItemMeta cosmeticMeta = cosmeticItem.getItemMeta();
-        if (cosmeticMeta == null) return;
-
+    private void addEquipmentLore(CosmeticUser user, ItemMeta cosmeticMeta, ItemStack physicalEquippedItem,
+                                  ItemMeta physicalMeta, SlotOptionConfig slotOption, boolean packetDisplay) {
         List<Component> lore = new ArrayList<>();
-        if (includeName) lore.addAll(formatEquipmentName(getEquipmentName(physicalEquippedItem, physicalMeta)));
-        if (includeLore && physicalMeta != null && physicalMeta.hasLore()) {
+        if (slotOption.isEquipmentNamePassThrough()) {
+            lore.addAll(user.formatEquipmentName(this, Settings.getEquipmentNameFormat(),
+                    getEquipmentName(physicalEquippedItem, physicalMeta), packetDisplay));
+        }
+        if (slotOption.isEquipmentLorePassThrough() && physicalMeta != null && physicalMeta.hasLore()) {
             List<Component> physicalLore = physicalMeta.lore();
             if (physicalLore != null) lore.addAll(physicalLore);
         }
@@ -137,19 +146,6 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
         }
 
         cosmeticMeta.lore(lore);
-        cosmeticItem.setItemMeta(cosmeticMeta);
-    }
-
-    private void copyEquipmentDisplayFlags(ItemStack cosmeticItem, ItemMeta physicalMeta, SlotOptionConfig slotOption) {
-        if (physicalMeta == null) return;
-        boolean hideEnchants = slotOption.isAddEnchantments() && physicalMeta.hasItemFlag(ItemFlag.HIDE_ENCHANTS);
-        boolean hideAttributes = slotOption.isEquipmentAttributesPassThrough() && physicalMeta.hasItemFlag(ItemFlag.HIDE_ATTRIBUTES);
-        if (!hideEnchants && !hideAttributes) return;
-        ItemMeta cosmeticMeta = cosmeticItem.getItemMeta();
-        if (cosmeticMeta == null) return;
-        if (hideEnchants) cosmeticMeta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
-        if (hideAttributes) cosmeticMeta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
-        cosmeticItem.setItemMeta(cosmeticMeta);
     }
 
     private Component getEquipmentName(ItemStack physicalEquippedItem, ItemMeta physicalMeta) {
@@ -159,23 +155,6 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
             if (physicalMeta.hasItemName()) return physicalMeta.itemName();
         }
         return Component.translatable(physicalEquippedItem.translationKey());
-    }
-
-    private List<Component> formatEquipmentName(Component equipmentName) {
-        String format = Settings.getEquipmentNameFormat();
-        FormattedName cached = formattedName;
-        if (cached != null && cached.format().equals(format) && cached.name().equals(equipmentName)) {
-            return cached.lines();
-        }
-        List<Component> lines = new ArrayList<>();
-        for (String line : NAME_LINE_SEPARATOR.split(format, -1)) {
-            lines.add(MiniMessage.miniMessage()
-                    .deserialize(line, Placeholder.component("equipment_name", equipmentName))
-                    .decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE));
-        }
-        List<Component> result = List.copyOf(lines);
-        formattedName = new FormattedName(format, equipmentName, result);
-        return result;
     }
 
     private void addEquipmentAttributes(ItemStack cosmeticItem, ItemStack physicalEquippedItem) {

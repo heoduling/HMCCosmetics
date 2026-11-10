@@ -404,6 +404,7 @@ public final class HMCCosmeticsPlugin extends HibiscusPlugin {
 
     public static void setup() {
         getInstance().reloadConfig();
+        for (CosmeticUser user : CosmeticUsers.values()) user.clearEquipmentNameFormats();
 
         // Configuration setup
         final File file = Path.of(getInstance().getDataFolder().getPath(), "config.yml").toFile();
