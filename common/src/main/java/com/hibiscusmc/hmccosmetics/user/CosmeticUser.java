@@ -2,6 +2,7 @@ package com.hibiscusmc.hmccosmetics.user;
 
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
+import io.papermc.paper.datacomponent.item.ItemLore;
 import com.hibiscusmc.hmccosmetics.HMCCosmeticsPlugin;
 import com.hibiscusmc.hmccosmetics.api.events.*;
 import com.hibiscusmc.hmccosmetics.config.Settings;
@@ -75,6 +76,9 @@ public class CosmeticUser implements CosmeticHolder {
     // Separate raw/packet inputs per slot. Entries contain only immutable formatting results.
     private volatile AtomicReferenceArray<FormattedEquipmentName> equipmentNameFormats = new AtomicReferenceArray<>(NAME_CACHE_SIZE);
     private record FormattedEquipmentName(Cosmetic cosmetic, String format, Component name, List<Component> lines) {}
+    private volatile AtomicReferenceArray<MergedEquipmentLore> equipmentLore = new AtomicReferenceArray<>(NAME_CACHE_SIZE);
+    private record MergedEquipmentLore(Cosmetic cosmetic, String format, List<Component> name,
+                                       ItemLore physical, ItemLore template, ItemLore result) {}
     private volatile UserWardrobeManager userWardrobeManager;
     private UserBalloonManager userBalloonManager;
     @Getter @Nullable
@@ -235,6 +239,7 @@ public class CosmeticUser implements CosmeticHolder {
         if (destroyed) return;
         destroyed = true;
         equipmentNameFormats = null;
+        equipmentLore = null;
         equipmentDisplays.clear();
         if(this.tickTask != null) this.tickTask.cancel();
 
@@ -247,6 +252,7 @@ public class CosmeticUser implements CosmeticHolder {
         if (destroyed) return shutdownCleanup;
         destroyed = true;
         equipmentNameFormats = null;
+        equipmentLore = null;
         equipmentDisplays.clear();
         if (tickTask != null) tickTask.cancel();
         UserBalloonManager balloon = userBalloonManager;
@@ -266,6 +272,7 @@ public class CosmeticUser implements CosmeticHolder {
         if (destroyed) return shutdownCleanup;
         destroyed = true;
         equipmentNameFormats = null;
+        equipmentLore = null;
         equipmentDisplays.clear();
         if (tickTask != null) tickTask.cancel();
         userWardrobeManager = null;
@@ -480,6 +487,27 @@ public class CosmeticUser implements CosmeticHolder {
     @ApiStatus.Internal
     public void clearEquipmentNameFormats() {
         equipmentNameFormats = destroyed ? null : new AtomicReferenceArray<>(NAME_CACHE_SIZE);
+        equipmentLore = destroyed ? null : new AtomicReferenceArray<>(NAME_CACHE_SIZE);
+    }
+
+    /** Immutable data components avoid converting unchanged native lore on every refresh. */
+    @ApiStatus.Internal
+    public ItemLore mergeEquipmentLore(CosmeticArmorType cosmetic, String format, List<Component> name,
+                                       @Nullable ItemLore physical, @Nullable ItemLore template, boolean packetDisplay) {
+        AtomicReferenceArray<MergedEquipmentLore> cache = destroyed ? null : equipmentLore;
+        int index = cosmetic.getEquipSlot().ordinal() * 2 + (packetDisplay ? 1 : 0);
+        MergedEquipmentLore cached = cache == null ? null : cache.get(index);
+        if (cached != null && cached.cosmetic() == cosmetic && cached.format().equals(format)
+                && cached.name().equals(name) && Objects.equals(cached.physical(), physical)
+                && Objects.equals(cached.template(), template)) {
+            return cached.result();
+        }
+        List<Component> lines = new ArrayList<>(name);
+        if (physical != null) lines.addAll(physical.lines());
+        if (template != null) lines.addAll(template.lines());
+        ItemLore result = ItemLore.lore(lines);
+        if (cache != null) cache.set(index, new MergedEquipmentLore(cosmetic, format, name, physical, template, result));
+        return result;
     }
 
     /** Called on the wearer owner thread before sending an equipment update. */

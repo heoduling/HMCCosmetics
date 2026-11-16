@@ -11,6 +11,7 @@ import com.google.common.collect.Multimap;
 import io.papermc.paper.datacomponent.DataComponentType;
 import io.papermc.paper.datacomponent.DataComponentTypes;
 import io.papermc.paper.datacomponent.item.ItemAttributeModifiers;
+import io.papermc.paper.datacomponent.item.ItemLore;
 import me.lojosho.hibiscuscommons.HibiscusCommonsPlugin;
 import me.lojosho.hibiscuscommons.nms.MinecraftVersion;
 import me.lojosho.hibiscuscommons.nms.NMSHandlers;
@@ -100,13 +101,28 @@ public class CosmeticArmorType extends Cosmetic implements CosmeticUpdateBehavio
         if (passLore || !enchantments.isEmpty() || hideEnchants || hideAttributes) {
             ItemMeta cosmeticMeta = cosmeticItem.getItemMeta();
             if (cosmeticMeta != null) {
+                ItemLore mergedLore = null;
                 for (Map.Entry<Enchantment, Integer> enchantment : enchantments.entrySet()) {
                     cosmeticMeta.addEnchant(enchantment.getKey(), enchantment.getValue(), true);
                 }
-                if (passLore) addEquipmentLore(user, cosmeticMeta, physicalEquippedItem, physicalMeta, slotOption, packetDisplay);
+                if (passLore) {
+                    if (HibiscusCommonsPlugin.isOnPaper() && !NMSHandlers.getVersion().isLower(MinecraftVersion.v1_21_4)) {
+                        String format = Settings.getEquipmentNameFormat();
+                        List<Component> name = slotOption.isEquipmentNamePassThrough()
+                                ? user.formatEquipmentName(this, format, getEquipmentName(physicalEquippedItem, physicalMeta), packetDisplay)
+                                : List.of();
+                        mergedLore = user.mergeEquipmentLore(this, format, name,
+                                slotOption.isEquipmentLorePassThrough() ? physicalEquippedItem.getData(DataComponentTypes.LORE) : null,
+                                cosmeticItem.getData(DataComponentTypes.LORE), packetDisplay);
+                    } else {
+                        addEquipmentLore(user, cosmeticMeta, physicalEquippedItem, physicalMeta, slotOption, packetDisplay);
+                    }
+                }
                 if (hideEnchants) cosmeticMeta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
                 if (hideAttributes) cosmeticMeta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
                 cosmeticItem.setItemMeta(cosmeticMeta);
+                // Apply after meta writeback so its original lore cannot overwrite the merged component.
+                if (mergedLore != null) cosmeticItem.setData(DataComponentTypes.LORE, mergedLore);
             }
         }
         if (slotOption.isEquipmentAttributesPassThrough()) addEquipmentAttributes(cosmeticItem, physicalEquippedItem);
